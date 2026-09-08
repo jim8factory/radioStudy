@@ -1,0 +1,180 @@
+<!doctype html><html lang="ja"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>資格勉強室</title><style>body{font-family:system-ui,sans-serif;max-width:1000px;margin:auto;padding:20px;background:#f5f7fa;color:#17202a}section{background:white;padding:20px;border-radius:14px;margin:12px 0;box-shadow:0 2px 10px #0001}button{padding:10px 14px;margin:5px;border:0;border-radius:9px;cursor:pointer;background:#2563eb;color:white}button.secondary{background:#64748b}button.good{background:#16a34a}.hidden{display:none}.choice{display:block;width:100%;text-align:left;background:#eef2ff;color:#17202a;margin:8px 0}.choice:hover{background:#dbeafe}.choice.correct{background:#bbf7d0}.choice.wrong{background:#fecaca}.small{color:#64748b;font-size:.9em}.status{padding:12px;background:#f1f5f9;border-radius:8px;white-space:pre-wrap}.tag{display:inline-block;padding:4px 8px;background:#e2e8f0;border-radius:20px;margin-right:6px}.explain{padding:12px;background:#fffbeb;border-left:4px solid #f59e0b}</style></head><body>
+<h1>📚 資格勉強室</h1>
+<section id="home"><h2>📚 学習メニュー</h2>
+<div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:10px">
+<button onclick="showLoader()">📥 Q・A PDFを読み込む</button>
+<button class="secondary" onclick="resumeStudy()" id="resumeBtn">▶ 保存した勉強を再開</button>
+<button class="secondary" onclick="showHistory()">📊 学習履歴</button>
+<button class="secondary" onclick="clearStudy()">🗑 保存データを削除</button>
+<button class="secondary" onclick="openOfficial()">🌐 公式過去問</button>
+</div>
+<div id="loader" class="hidden"><h3>Q・A PDF読み込み</h3><p class="small">Q＝問題PDF、A＝公式正答PDF。読み込み後に<strong>問題番号と正答を1問ずつ照合</strong>し、確認画面を表示します。</p>
+<label>問題PDF（Q）：<input id="qpdf" type="file" accept="application/pdf"></label><br><br>
+<label>正答PDF（A）：<input id="apdf" type="file" accept="application/pdf"></label><br>
+<button onclick="loadFiles()">🔎 PDFを検査・Q/A照合</button>
+<div id="status" class="status">待機中</div></div>
+<div id="history" class="hidden"></div>
+</section>
+<section id="verify" class="hidden"><h2>🔍 Q・A対応確認</h2><div id="verifySummary" class="status"></div><div id="verifyList"></div><button onclick="startVerifiedStudy()">▶ 確認済み問題で勉強開始</button><button class="secondary" onclick="showLoader()">↩ PDFを選び直す</button></section>
+<section id="room" class="hidden"><div><span id="counter" class="tag"></span><span id="subject" class="tag"></span></div><h2 id="question"></h2><div id="choices"></div><div id="result"></div><div>
+<button id="speakBtn" onclick="speakExplanation()">🔊 解説を読み上げ</button><button class="secondary" onclick="stopSpeak()">⏹ 読み上げ停止</button><button class="secondary" onclick="showAnswer()">正答を見る</button><button id="nextBtn" onclick="nextQuestion()">次の問題 ▶</button><button class="secondary" onclick="pauseStudy()">⏸ 勉強を途中でやめる</button><button class="secondary" onclick="backMenu()">🏠 メニュー</button></div><hr>
+<label>授業モード <select id="mode"><option>やさしく授業</option><option>標準授業</option><option>合格モード</option></select></label>　<label>速度 <input id="speed" type="range" min="0.6" max="1.5" step="0.1" value="1"></label><div id="score" class="small"></div></section>
+<script>
+let qs=[],idx=0,score=0,answered=false; const circled={'①':1,'②':2,'③':3,'④':4,'⑤':5,'⑥':6,'⑦':7,'⑧':8,'⑨':9,'⑩':10};
+function norm(s){return String(s??'').normalize('NFKC').replace(/\r/g,'').replace(/　/g,' ').replace(/[－−‐‑‒–—―]/g,'-').replace(/[〔〕]/g,m=>m==='〔'?'[':']');}
+async function ensurePdf(){if(window.pdfjsLib)return;await new Promise((res,rej)=>{let s=document.createElement('script');s.src='https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js';s.onload=res;s.onerror=()=>{let t=document.createElement('script');t.src='https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.min.js';t.onload=res;t.onerror=rej;document.head.appendChild(t)};document.head.appendChild(s)});}
+async function extract(file){
+  const data=await file.arrayBuffer();
+  const pdf=await pdfjsLib.getDocument({data,disableWorker:true}).promise;
+  let out='';
+  for(let p=1;p<=pdf.numPages;p++){
+    const page=await pdf.getPage(p), c=await page.getTextContent();
+    const rows=[];
+    for(const it of c.items){
+      if(!it.str || !it.str.trim()) continue;
+      const x=it.transform[4], y=it.transform[5];
+      let row=rows.find(r=>Math.abs(r.y-y)<3);
+      if(!row){row={y,items:[]};rows.push(row)}
+      row.items.push({x,s:it.str});
+    }
+    rows.sort((a,b)=>b.y-a.y);
+    for(const r of rows){r.items.sort((a,b)=>a.x-b.x);out+=r.items.map(z=>z.s).join(' ')+'\n'}
+    out+='\n';
+  }
+  return norm(out);
+}
+function parseAnswers(t){
+  const a={}, warnings=[];
+  t=norm(t).replace(/[【】]/g,'[').replace(/[（]/g,'(').replace(/[）]/g,')');
+  const lines=t.split(/\n+/).map(x=>x.trim()).filter(Boolean);
+  const put=(id,n,src)=>{
+    id=id.replace(/\s+/g,'').replace(/^([AB])-0+(\d+)$/,'$1-$2');
+    n=Number(n);
+    if(!/^[AB]-\d+$/.test(id)||!Number.isInteger(n)||n<1||n>5)return;
+    if(a[id]!=null && a[id]!==n) warnings.push(`${id}: 正答が ${a[id]} と ${n} の2通り検出`);
+    else a[id]=n;
+  };
+  for(const line of lines){
+    // [ A - 1 ] 3 / 〔A-1〕3 / A-1: 3 / A-1 3 など
+    const re=/\[?\s*(A|B)\s*-\s*(\d{1,3})\s*\]?\s*(?:[:：=]|\s)+\s*([1-5])(?=\D|$)/g;
+    let m; while((m=re.exec(line))) put(`${m[1]}-${m[2]}`,m[3],line);
+  }
+  // PDFの文字抽出で「A-1」と「3」が別アイテム/別行になった場合の補助。
+  for(let i=0;i<lines.length;i++){
+    const idm=lines[i].match(/\[?\s*(A|B)\s*-\s*(\d{1,3})\s*\]?/);
+    if(!idm)continue;
+    const id=`${idm[1]}-${idm[2]}`;
+    if(a[id]!=null)continue;
+    const tail=lines[i].slice(idm.index+idm[0].length).match(/\b([1-5])\b/);
+    if(tail){put(id,tail[1],lines[i]);continue;}
+    for(let j=1;j<=3 && i+j<lines.length;j++){
+      const z=lines[i+j].match(/^([1-5])$/); if(z){put(id,z[1],lines[i+j]);break;}
+    }
+  }
+  return {answers:a,warnings};
+}
+function parseQuestions(t){
+  t=norm(t);
+  const out=[], seen=new Set();
+  const head=/(?:^|\n|\s)((?:A|B)\s*-\s*\d{1,3})(?=\s|[\[\(])/g;
+  let hs=[],m;
+  while((m=head.exec(t))){const id=m[1].replace(/\s+/g,''); if(!seen.has(id)){seen.add(id);hs.push({id,at:m.index+m[0].length});}}
+  for(let i=0;i<hs.length;i++){
+    const id=hs[i].id;
+    const body=t.slice(hs[i].at,i+1<hs.length?hs[i+1].at:t.length);
+    const choices=[];
+    const cr=/(?:^|\s)([1-5])(?:[\.．、)）:]|\s+)\s*([\s\S]*?)(?=(?:\s|^)[1-5](?:[\.．、)）:]|\s+)|$)/g;
+    let c; while((c=cr.exec(body))){const text=c[2].replace(/\s+/g,' ').trim();if(text)choices.push({n:+c[1],text});}
+    const uniq=[]; const used=new Set(); for(const c of choices) if(!used.has(c.n)){used.add(c.n);uniq.push(c);}
+    if(uniq.length>=2){
+      const pos=body.search(/(?:^|\s)1(?:[\.．、)）:]|\s+)/);
+      const qtext=(pos>=0?body.slice(0,pos):body).replace(/\s+/g,' ').trim();
+      out.push({id,text:qtext||body.replace(/\s+/g,' ').trim().slice(0,500),choices:uniq});
+    }
+  }
+  return out;
+}
+function normalizeDate(s){if(!s)return null;s=norm(String(s)).replace(/[年月日]/g,'-').replace(/[./]/g,'-').replace(/-+/g,'-');const m=s.match(/(20\d{2})-(\d{1,2})-(\d{1,2})/);return m?`${m[1]}-${String(m[2]).padStart(2,'0')}-${String(m[3]).padStart(2,'0')}`:null}
+function extractDates(t){const out=new Set(),x=norm(t);let m;const r1=/(20\d{2})\s*[年\/-]\s*(\d{1,2})\s*[月\/-]\s*(\d{1,2})\s*日?/g;while((m=r1.exec(x)))out.add(`${m[1]}-${String(m[2]).padStart(2,'0')}-${String(m[3]).padStart(2,'0')}`);const r2=/(20\d{2})[\/-](\d{1,2})[\/-](\d{1,2})/g;while((m=r2.exec(x)))out.add(`${m[1]}-${String(m[2]).padStart(2,'0')}-${String(m[3]).padStart(2,'0')}`);return [...out]}
+function normalizeAmount(s){if(s==null)return null;let x=String(s).replace(/[￥¥]/g,'').replace(/円/g,'').replace(/[ ,，]/g,'').replace(/\s/g,'');const m=x.match(/\d+/);return m?Number(m[0]):null}
+function extractAmounts(t){const out=new Set(),x=norm(t);const r=/(?:表示額|表示金額|金額|料金|受験料|手数料|価格|額)\s*[:：=]?\s*(?:¥|￥)?\s*\d{1,3}(?:[,，]\d{3})*(?:円)?/g;let m;while((m=r.exec(x))){const n=normalizeAmount(m[0].match(/(?:¥|￥)?\s*\d[\d,，]*/)?.[0]);if(n!=null)out.add(n)}return [...out]}
+function normalizeDocumentNumber(s){if(!s)return null;let x=norm(String(s)).toUpperCase().replace(/[\s　\-－−‐‑‒–—―]/g,'');const m=x.match(/([A-Z]{2})(\d{3})/);return m?`${m[1]}${m[2]}`:null}
+function extractDocumentNumbers(t){const out=new Set(),x=norm(t);let m;const r=/(?:\b|[^A-Za-z])([A-Za-zＡ-Ｚａ-ｚ]{2})\s*[\-－−‐‑‒–—―]?\s*([0-9０-９]{3})(?=\D|$)/g;while((m=r.exec(x))){const d=normalizeDocumentNumber(m[1]+m[2]);if(d)out.add(d)}return [...out]}
+function compareDocumentMeta(qt,at){const issues=[],qDocs=extractDocumentNumbers(qt),aDocs=extractDocumentNumbers(at),qDates=extractDates(qt),aDates=extractDates(at),qAmts=extractAmounts(qt),aAmts=extractAmounts(at);if(!qDocs.length||!aDocs.length)issues.push('書類番号不一致（QまたはAのPDFから書類番号を検出できません）');else if(!qDocs.some(d=>aDocs.includes(d)))issues.push(`書類番号不一致（Q: ${qDocs.join(', ')} / A: ${aDocs.join(', ')}）`);if(qDates.length||aDates.length){if(!qDates.length||!aDates.length)issues.push('日付不一致（片方のPDFから日付を検出できません）');else if(!qDates.some(d=>aDates.includes(d)))issues.push(`日付不一致（Q: ${qDates.join(', ')} / A: ${aDates.join(', ')}）`)}if(qAmts.length||aAmts.length){if(!qAmts.length||!aAmts.length)issues.push('表示額不一致（片方のPDFから表示額を検出できません）');else if(!qAmts.some(n=>aAmts.includes(n)))issues.push(`表示額不一致（Q: ${qAmts.join(', ')} / A: ${aAmts.join(', ')})`)}return{issues,qDocs,aDocs,qDates,aDates,qAmts,aAmts}}
+function validateMatch(docIssues=[]){const issues=[...docIssues],ids=new Set();qs.forEach(q=>{if(ids.has(q.id))issues.push(`${q.id}: 問題番号が重複`);ids.add(q.id);if(!q.choices||q.choices.length<2)issues.push(`${q.id}: 選択肢不足`);if(q.answer!=null&&!q.choices.some(c=>c.n===q.answer))issues.push(`${q.id}: 正答${q.answer}番が選択肢に存在しない`)});return issues}
+async function loadFiles(){
+  const q=document.getElementById('qpdf').files[0], a=document.getElementById('apdf').files[0], st=document.getElementById('status');
+  if(!q||!a){st.textContent='QとAのPDFを両方選択してください。';return;}
+  st.textContent='⏳ Q・A PDFを読み込み、対応を確認しています…';
+  try{
+    await ensurePdf();
+    const qt=await extract(q), at=await extract(a);
+    const parsedA=parseAnswers(at), parsed=parseQuestions(qt);
+    const meta=compareDocumentMeta(qt,at);
+    const documentPairOk=meta.issues.length===0;
+    parsed.forEach(x=>x.answer=documentPairOk ? (parsedA.answers[x.id]??null) : null);
+    qs=parsed;
+    const issues=validateMatch(meta.issues);
+    const matched=documentPairOk ? qs.filter(x=>x.answer!=null && !issues.some(z=>z.startsWith(x.id+': 正答'))).length : 0;
+    const missing=qs.filter(x=>x.answer==null).map(x=>x.id);
+    const invalid=issues.filter(z=>/正答|選択肢/.test(z));
+    st.textContent=`検査完了\nQ：${q.name}\nA：${a.name}\n抽出問題：${qs.length}問\n正答照合：${matched}問\n要確認：${missing.length+invalid.length+meta.issues.length}件\n書類番号：${meta.qDocs.length?meta.qDocs.join(', '):'未検出'} ⇔ ${meta.aDocs.length?meta.aDocs.join(', '):'未検出'}\n日付：${meta.qDates.length?meta.qDates.join(', '):'未検出'} ⇔ ${meta.aDates.length?meta.aDates.join(', '):'未検出'}\n表示額：${meta.qAmts.length?meta.qAmts.join(', '):'未検出'} ⇔ ${meta.aAmts.length?meta.aAmts.join(', '):'未検出'}${parsedA.warnings.length?'\n正答表の警告：'+parsedA.warnings.length+'件':''}`;
+    if(!qs.length) throw Error('Q PDFから問題を抽出できませんでした。');
+    window.qaBlockers=meta.issues;window.qaDocumentPairOk=documentPairOk; showVerification(q.name,a.name,parsedA.warnings,issues,documentPairOk);
+  }catch(e){st.textContent='読み込みエラー：'+(e.message||e)+'\n\nPDF.jsを読み込めない場合はGitHub Pages等HTTPS上で開いてください。';}
+}
+function showLoader(){hideAll();document.getElementById('home').classList.remove('hidden');document.getElementById('loader').classList.remove('hidden');updateResumeButton()}
+function showVerification(qname,aname,warnings=[],issues=[],documentPairOk=false){
+  hideAll();document.getElementById('verify').classList.remove('hidden');
+  const matched=qs.filter(x=>x.answer!=null && !issues.some(z=>z.startsWith(x.id+': 正答'))).length, missing=qs.filter(x=>x.answer==null);
+  const badIds=new Set(issues.map(z=>z.split(':')[0]));
+  document.getElementById('verifySummary').innerHTML=`<b>Q・A対応確認結果</b><br>Q：${qname}<br>A：${aname}<br>Q抽出：${qs.length}問　／　正答照合：${matched}問　／　要確認：${missing.length}問<br>${(missing.length||issues.length||warnings.length)?'⚠ 要確認項目があります。問題ごとの表示を確認してください。':'✅ QとAの対応を確認できました。'}`;
+  const gate=document.createElement('div');gate.className='explain';gate.innerHTML=documentPairOk?'✅ 書類番号・日付・表示額の文書照合を通過。正答を採点に使用できます。':'⛔ 書類照合NG。正答を問題へ割り当てず、採点できません。';document.getElementById('verifyList').innerHTML='';document.getElementById('verifyList').appendChild(gate);const box=document.getElementById('verifyList');
+  qs.forEach((x,i)=>{const d=document.createElement('div');d.className='status';d.style.margin='5px 0';const problemIssues=issues.filter(z=>z.startsWith(x.id+':')); d.innerHTML=`${i+1}. <b>${x.id}</b>　${x.answer==null?'⚠ 正答未照合':problemIssues.length?'⚠ '+problemIssues.join(' / '):`✅ 正答 ${x.answer}番`}`;box.appendChild(d)});
+  if(warnings.length){const w=document.createElement('div');w.className='explain';w.innerHTML='<b>⚠ 正答PDFの解析警告</b><br>'+warnings.join('<br>');box.appendChild(w)}
+}
+function startVerifiedStudy(){const b=window.qaBlockers||[];if(b.length){alert('Q/A照合NGのため学習を開始できません。\n\n'+b.join('\n'));return}if(!qs.length)return;hideAll();document.getElementById('room').classList.remove('hidden');idx=0;score=0;showQuestion()}
+function hideAll(){['home','verify','room'].forEach(id=>document.getElementById(id).classList.add('hidden'));stopSpeak()}
+function backMenu(){saveStudy();showLoader()}
+function showHistory(){hideAll();document.getElementById('home').classList.remove('hidden');document.getElementById('history').classList.remove('hidden');const raw=localStorage.getItem('shikakuStudyState');document.getElementById('history').innerHTML=raw?'<h3>📊 保存中の学習</h3><div class="status">保存日時：'+new Date(JSON.parse(raw).updated).toLocaleString()+'<br>問題：'+(JSON.parse(raw).idx+1)+'問目付近<br>正解数：'+JSON.parse(raw).score+'</div>':'<h3>📊 学習履歴</h3><div class="status">保存された学習はありません。</div>'}
+function saveStudy(){
+  if(!qs.length)return;
+  const data={qs:qs,idx:idx,score:score,updated:new Date().toISOString()};
+  localStorage.setItem('shikakuStudyState',JSON.stringify(data));
+}
+function updateResumeButton(){
+  const b=document.getElementById('resumeBtn');
+  if(!b)return;
+  const raw=localStorage.getItem('shikakuStudyState');
+  b.style.display=raw?'inline-block':'none';
+}
+function pauseStudy(){
+  saveStudy(); stopSpeak();
+  document.getElementById('room').classList.add('hidden');
+  document.getElementById('home').classList.remove('hidden');
+  document.getElementById('loader').classList.add('hidden');
+  document.getElementById('status').textContent='勉強を保存しました。［保存した勉強を再開］から続きができます。';
+  updateResumeButton();
+}
+function resumeStudy(){
+  const raw=localStorage.getItem('shikakuStudyState');
+  if(!raw){document.getElementById('status').textContent='保存された勉強データがありません。';return;}
+  try{
+    const d=JSON.parse(raw);
+    if(!Array.isArray(d.qs)||!d.qs.length)throw Error('保存データがありません');
+    qs=d.qs; idx=Math.min(Number(d.idx)||0,qs.length-1); score=Number(d.score)||0;
+    document.getElementById('home').classList.add('hidden');
+    document.getElementById('room').classList.remove('hidden');
+    showQuestion();
+  }catch(e){localStorage.removeItem('shikakuStudyState');updateResumeButton();document.getElementById('status').textContent='保存データを読み込めませんでした。';}
+}
+function clearStudy(){localStorage.removeItem('shikakuStudyState');updateResumeButton();}
+
+function showQuestion(){let q=qs[idx];answered=false;document.getElementById('counter').textContent=`${idx+1} / ${qs.length}`;document.getElementById('subject').textContent=q.id;document.getElementById('question').textContent=q.text;let box=document.getElementById('choices');box.innerHTML='';q.choices.forEach(c=>{let b=document.createElement('button');b.className='choice';b.textContent=`${c.n}. ${c.text}`;b.onclick=()=>answer(c.n,b);box.appendChild(b)});document.getElementById('result').innerHTML='';document.getElementById('score').textContent=`正解 ${score} / 回答済み ${idx}問`;saveStudy();updateResumeButton()}
+async function answer(n,b){if(answered)return;answered=true;let q=qs[idx];q.userAnswer=n;if(q.answer==null){document.getElementById('result').innerHTML='<div class="explain">⚠ 公式正答を照合できないため採点しません。</div>';return}if(n===q.answer){score++;b.classList.add('correct');document.getElementById('result').innerHTML='<div class="explain">✅ 正解！</div>'}else{b.classList.add('wrong');document.getElementById('result').innerHTML=`<div class="explain">❌ 不正解。正答は ${q.answer} です。</div>`;document.querySelectorAll('.choice').forEach(x=>{if(x.textContent.startsWith(q.answer+'.'))x.classList.add('correct')})}document.getElementById('score').textContent=`正解 ${score} / 回答済み ${idx+1}問`;saveStudy();document.getElementById('result').innerHTML+='<div class="explain">⏳ アマ2がQ/Aを基に解説しています…</div>';const ex=await ama2Explain(q,n);document.getElementById('result').innerHTML+='<div class="explain"><b>アマ2の解説</b><br>'+ex.replace(/\n/g,'<br>')+'</div>'}
+function showAnswer(){let q=qs[idx];document.getElementById('result').innerHTML=q.answer==null?'<div class="explain">⚠ 公式正答未確認</div>':`<div class="explain">正答：${q.answer}</div>`}
+function nextQuestion(){if(idx<qs.length-1){idx++;showQuestion()}else{saveStudy();document.getElementById('result').innerHTML=`<div class="explain">🎉 終了！ 正解 ${score} / ${qs.length}問</div>`;document.getElementById('nextBtn').disabled=true}}
+async function ama2Explain(q,userAnswer){if(q.answer==null)return'公式正答を確認できないため、アマ2による解説は生成できません。確認が必要です。';const payload={role:'アマ2',task:'第二級アマチュア無線技士の問題解説',instruction:'QとAに根拠がある範囲だけで説明し、推測・創作をしない。判断不能なら確認が必要と明示する。',question:{id:q.id,text:q.text,choices:q.choices},officialAnswer:q.answer,userAnswer:userAnswer??null,required:['なぜその答えになるのか','QとAの対応','誤答との違い','必要な計算・判断・根拠','重要ポイント']};if(window.AMA2_API_URL){try{const r=await fetch(window.AMA2_API_URL,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});if(!r.ok)throw Error('API '+r.status);const d=await r.json();if(d.explanation)return d.explanation}catch(e){return'アマ2解説サービスに接続できませんでした。Q/Aデータだけでは判断できないため、確認が必要です。'}}const c=q.choices.find(x=>x.n===q.answer);const wrong=userAnswer!=null&&userAnswer!==q.answer?`あなたの回答は${userAnswer}番。公式正答は${q.answer}番です。誤答選択肢の本文を比較してください。`:'';return`【アマ2解説】\n正答：${q.answer}番「${c?c.text:'選択肢本文を取得できません'}」\n\nQ/A対応：問題ID ${q.id} に対して、読み込んだ公式Aの ${q.answer}番を対応付けています。\n${wrong}\n\n根拠：現在読み込まれているQ/Aの情報だけでは、なぜ正答になるかの詳細な法規・無線工学上の根拠を十分に確定できません。推測で補わず、確認が必要です。`}
+async function makeExplanation(q){return ama2Explain(q,q.userAnswer??null)}
+async function speakExplanation(){stopSpeak();let q=qs[idx];let text=await makeExplanation(q);document.getElementById('result').innerHTML='<div class="explain"><b>解説</b><br>'+text+'</div>';let u=new SpeechSynthesisUtterance(text);u.lang='ja-JP';u.rate=+document.getElementById('speed').value;u.onend=()=>{document.getElementById('speakBtn').textContent='🔊 解説を読み上げ'};speechSynthesis.speak(u);document.getElementById('speakBtn').textContent='🔊 解説を再生中…'}function stopSpeak(){speechSynthesis.cancel();document.getElementById('speakBtn').textContent='🔊 解説を読み上げ'}function openOfficial(){window.open('https://www.nichimu.or.jp/kshiken/siken/index.html','_blank')}
+</script><script>window.addEventListener('load',updateResumeButton);</script></body></html>
