@@ -1,0 +1,161 @@
+<!doctype html><html lang="ja"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>資格勉強室</title><style>body{font-family:system-ui,sans-serif;max-width:1000px;margin:auto;padding:20px;background:#f5f7fa;color:#17202a}section{background:white;padding:20px;border-radius:14px;margin:12px 0;box-shadow:0 2px 10px #0001}button{padding:10px 14px;margin:5px;border:0;border-radius:9px;cursor:pointer;background:#2563eb;color:white}button.secondary{background:#64748b}button.good{background:#16a34a}.hidden{display:none}.choice{display:block;width:100%;text-align:left;background:#eef2ff;color:#17202a;margin:8px 0}.choice:hover{background:#dbeafe}.choice.correct{background:#bbf7d0}.choice.wrong{background:#fecaca}.small{color:#64748b;font-size:.9em}.status{padding:12px;background:#f1f5f9;border-radius:8px;white-space:pre-wrap}.tag{display:inline-block;padding:4px 8px;background:#e2e8f0;border-radius:20px;margin-right:6px}.explain{padding:12px;background:#fffbeb;border-left:4px solid #f59e0b}</style></head><body>
+<h1>📚 資格勉強室</h1>
+<section id="home"><h2>📚 学習メニュー</h2>
+<div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:10px">
+<button onclick="showLoader()">📥 Q・A PDFを読み込む</button>
+<button class="secondary" onclick="resumeStudy()" id="resumeBtn">▶ 保存した勉強を再開</button>
+<button class="secondary" onclick="showHistory()">📊 学習履歴</button>
+<button class="secondary" onclick="clearStudy()">🗑 保存データを削除</button>
+<button class="secondary" onclick="openOfficial()">🌐 公式過去問</button>
+</div>
+<div id="loader" class="hidden"><h3>Q・A PDF読み込み</h3><p class="small">Q＝問題PDF、A＝公式正答PDF。読み込み後に<strong>問題番号と正答を1問ずつ照合</strong>し、確認画面を表示します。</p>
+<label>問題PDF（Q）：<input id="qpdf" type="file" accept="application/pdf"></label><br><br>
+<label>正答PDF（A）：<input id="apdf" type="file" accept="application/pdf"></label><br>
+<button onclick="loadFiles()">🔎 PDFを検査・Q/A照合</button>
+<div id="status" class="status">待機中</div></div>
+<div id="history" class="hidden"></div>
+</section>
+<section id="verify" class="hidden"><h2>🔍 Q・A対応確認</h2><div id="verifySummary" class="status"></div><div id="verifyList"></div><button onclick="startVerifiedStudy()">▶ 確認済み問題で勉強開始</button><button class="secondary" onclick="showLoader()">↩ PDFを選び直す</button></section>
+<section id="room" class="hidden"><div><span id="counter" class="tag"></span><span id="subject" class="tag"></span></div><h2 id="question"></h2><div id="choices"></div><div id="result"></div><div>
+<button id="speakBtn" onclick="speakExplanation()">🔊 解説を読み上げ</button><button class="secondary" onclick="stopSpeak()">⏹ 読み上げ停止</button><button class="secondary" onclick="showAnswer()">正答を見る</button><button id="nextBtn" onclick="nextQuestion()">次の問題 ▶</button><button class="secondary" onclick="pauseStudy()">⏸ 勉強を途中でやめる</button><button class="secondary" onclick="backMenu()">🏠 メニュー</button></div><hr>
+<label>授業モード <select id="mode"><option>やさしく授業</option><option>標準授業</option><option>合格モード</option></select></label>　<label>速度 <input id="speed" type="range" min="0.6" max="1.5" step="0.1" value="1"></label><div id="score" class="small"></div></section>
+<script>
+let qs=[],idx=0,score=0,answered=false; const circled={'①':1,'②':2,'③':3,'④':4,'⑤':5,'⑥':6,'⑦':7,'⑧':8,'⑨':9,'⑩':10};
+function norm(s){return s.replace(/\r/g,'').replace(/　/g,' ').replace(/[０-９]/g,c=>String.fromCharCode(c.charCodeAt(0)-65248)).replace(/Ａ/g,'A').replace(/Ｂ/g,'B').replace(/[－−]/g,'-').replace(/[〔〕]/g,m=>m==='〔'?'[':']');}
+async function ensurePdf(){if(window.pdfjsLib)return;await new Promise((res,rej)=>{let s=document.createElement('script');s.src='https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js';s.onload=res;s.onerror=()=>{let t=document.createElement('script');t.src='https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.min.js';t.onload=res;t.onerror=rej;document.head.appendChild(t)};document.head.appendChild(s)});}
+async function extract(file){
+  const data=await file.arrayBuffer();
+  const pdf=await pdfjsLib.getDocument({data,disableWorker:true}).promise;
+  let out='';
+  for(let p=1;p<=pdf.numPages;p++){
+    const page=await pdf.getPage(p), c=await page.getTextContent();
+    const rows=[];
+    for(const it of c.items){
+      if(!it.str || !it.str.trim()) continue;
+      const x=it.transform[4], y=it.transform[5];
+      let row=rows.find(r=>Math.abs(r.y-y)<3);
+      if(!row){row={y,items:[]};rows.push(row)}
+      row.items.push({x,s:it.str});
+    }
+    rows.sort((a,b)=>b.y-a.y);
+    for(const r of rows){r.items.sort((a,b)=>a.x-b.x);out+=r.items.map(z=>z.s).join(' ')+'\n'}
+    out+='\n';
+  }
+  return norm(out);
+}
+function parseAnswers(t){
+  const a={};
+  t=norm(t);
+  const lines=t.split(/\n+/).map(x=>x.trim()).filter(Boolean);
+  for(const line of lines){
+    const ms=[...line.matchAll(/\[\s*(A|B)\s*-\s*(\d{1,2})\s*\]\s*([0-9]{1,2})/g)];
+    for(const m of ms){ a[m[1]+'-'+m[2]]=Number(m[3]); }
+  }
+  // 列が分離されたPDFにも対応：正答表のA問題はA-1～A-24の順に並ぶ
+  const aIds=[];
+  for(let n=1;n<=30;n++) if(!a['A-'+n]) aIds.push(n);
+  const nums=[];
+  for(const line of lines){
+    if(/\[\s*A\s*-/.test(line)) continue;
+    const m=line.match(/^([1-5])$/); if(m) nums.push(Number(m[1]));
+  }
+  // 同一行で取れなかった場合は、A問題見出し後の単独数字列を補助利用
+  if(Object.keys(a).filter(k=>k.startsWith('A-')).length<20){
+    const block=t.split(/B\s*問題/i)[0];
+    const pairs=[...block.matchAll(/A\s*-\s*(\d{1,2})\s*\]\s*([1-5])/g)];
+    for(const m of pairs) a['A-'+m[1]]=Number(m[2]);
+  }
+  return a;
+}
+function parseQuestions(t){
+  t=norm(t);
+  const out=[];
+  const head=/((?:A|B)\s*-\s*\d{1,2})/g;
+  let hs=[],m;
+  while((m=head.exec(t))) hs.push({id:m[1].replace(/\s+/g,'').replace('-', '-'),at:m.index+m[0].length});
+  for(let i=0;i<hs.length;i++){
+    const id=hs[i].id;
+    const body=t.slice(hs[i].at,i+1<hs.length?hs[i+1].at:t.length);
+    const choices=[];
+    const cr=/(?:^|\s)([1-5])\s+([\s\S]*?)(?=\s+[1-5]\s+|$)/g;
+    let c;
+    while((c=cr.exec(body))) choices.push({n:+c[1],text:c[2].replace(/\s+/g,' ').trim()});
+    if(choices.length>=2){
+      const pos=body.search(/(?:^|\s)1\s+/);
+      let qtext=(pos>=0?body.slice(0,pos):body).replace(/\s+/g,' ').trim();
+      qtext=qtext.replace(/^次の記述のうち[、,]?/,'次の記述のうち');
+      out.push({id,text:qtext||body.replace(/\s+/g,' ').trim().slice(0,500),choices});
+    }
+  }
+  return out;
+}
+async function loadFiles(){
+  const q=document.getElementById('qpdf').files[0], a=document.getElementById('apdf').files[0], st=document.getElementById('status');
+  if(!q||!a){st.textContent='QとAのPDFを両方選択してください。';return;}
+  st.textContent='⏳ Q・A PDFを読み込み、対応を確認しています…';
+  try{
+    await ensurePdf();
+    const qt=await extract(q), at=await extract(a);
+    const keys=parseAnswers(at), parsed=parseQuestions(qt);
+    parsed.forEach(x=>x.answer=keys[x.id]??null);
+    qs=parsed;
+    const matched=qs.filter(x=>x.answer!=null).length;
+    const missing=qs.filter(x=>x.answer==null).map(x=>x.id);
+    st.textContent=`検査完了\nQ：${q.name}\nA：${a.name}\n抽出問題：${qs.length}問\n正答照合：${matched}問\n要確認：${missing.length}問`;
+    if(!qs.length) throw Error('Q PDFから問題を抽出できませんでした。');
+    showVerification(q.name,a.name);
+  }catch(e){st.textContent='読み込みエラー：'+(e.message||e)+'\n\nPDF.jsを読み込めない場合はGitHub Pages等HTTPS上で開いてください。';}
+}
+function showLoader(){hideAll();document.getElementById('home').classList.remove('hidden');document.getElementById('loader').classList.remove('hidden');updateResumeButton()}
+function showVerification(qname,aname){
+  hideAll();document.getElementById('verify').classList.remove('hidden');
+  const matched=qs.filter(x=>x.answer!=null).length, missing=qs.filter(x=>x.answer==null);
+  document.getElementById('verifySummary').innerHTML=`<b>Q・A対応確認結果</b><br>Q：${qname}<br>A：${aname}<br>Q抽出：${qs.length}問　／　正答照合：${matched}問　／　要確認：${missing.length}問<br>${missing.length?'⚠ 要確認の問題は採点対象にしません。':'✅ QとAの対応を確認できました。'}`;
+  const box=document.getElementById('verifyList');box.innerHTML='';
+  qs.forEach((x,i)=>{const d=document.createElement('div');d.className='status';d.style.margin='5px 0';d.innerHTML=`${i+1}. <b>${x.id}</b>　${x.answer==null?'⚠ 正答未照合':`✅ 正答 ${x.answer}番`}`;box.appendChild(d)});
+}
+function startVerifiedStudy(){if(!qs.length)return;hideAll();document.getElementById('room').classList.remove('hidden');idx=0;score=0;showQuestion()}
+function hideAll(){['home','verify','room'].forEach(id=>document.getElementById(id).classList.add('hidden'));stopSpeak()}
+function backMenu(){saveStudy();showLoader()}
+function showHistory(){hideAll();document.getElementById('home').classList.remove('hidden');document.getElementById('history').classList.remove('hidden');const raw=localStorage.getItem('shikakuStudyState');document.getElementById('history').innerHTML=raw?'<h3>📊 保存中の学習</h3><div class="status">保存日時：'+new Date(JSON.parse(raw).updated).toLocaleString()+'<br>問題：'+(JSON.parse(raw).idx+1)+'問目付近<br>正解数：'+JSON.parse(raw).score+'</div>':'<h3>📊 学習履歴</h3><div class="status">保存された学習はありません。</div>'}
+function saveStudy(){
+  if(!qs.length)return;
+  const data={qs:qs,idx:idx,score:score,updated:new Date().toISOString()};
+  localStorage.setItem('shikakuStudyState',JSON.stringify(data));
+}
+function updateResumeButton(){
+  const b=document.getElementById('resumeBtn');
+  if(!b)return;
+  const raw=localStorage.getItem('shikakuStudyState');
+  b.style.display=raw?'inline-block':'none';
+}
+function pauseStudy(){
+  saveStudy(); stopSpeak();
+  document.getElementById('room').classList.add('hidden');
+  document.getElementById('home').classList.remove('hidden');
+  document.getElementById('loader').classList.add('hidden');
+  document.getElementById('status').textContent='勉強を保存しました。［保存した勉強を再開］から続きができます。';
+  updateResumeButton();
+}
+function resumeStudy(){
+  const raw=localStorage.getItem('shikakuStudyState');
+  if(!raw){document.getElementById('status').textContent='保存された勉強データがありません。';return;}
+  try{
+    const d=JSON.parse(raw);
+    if(!Array.isArray(d.qs)||!d.qs.length)throw Error('保存データがありません');
+    qs=d.qs; idx=Math.min(Number(d.idx)||0,qs.length-1); score=Number(d.score)||0;
+    document.getElementById('home').classList.add('hidden');
+    document.getElementById('room').classList.remove('hidden');
+    showQuestion();
+  }catch(e){localStorage.removeItem('shikakuStudyState');updateResumeButton();document.getElementById('status').textContent='保存データを読み込めませんでした。';}
+}
+function clearStudy(){localStorage.removeItem('shikakuStudyState');updateResumeButton();}
+
+function showQuestion(){let q=qs[idx];answered=false;document.getElementById('counter').textContent=`${idx+1} / ${qs.length}`;document.getElementById('subject').textContent=q.id;document.getElementById('question').textContent=q.text;let box=document.getElementById('choices');box.innerHTML='';q.choices.forEach(c=>{let b=document.createElement('button');b.className='choice';b.textContent=`${c.n}. ${c.text}`;b.onclick=()=>answer(c.n,b);box.appendChild(b)});document.getElementById('result').innerHTML='';document.getElementById('score').textContent=`正解 ${score} / 回答済み ${idx}問`;saveStudy();updateResumeButton()}
+function answer(n,b){if(answered)return;answered=true;let q=qs[idx];if(q.answer==null){document.getElementById('result').innerHTML='<div class="explain">⚠ 公式正答を照合できないため採点しません。</div>';return}if(n===q.answer){score++;b.classList.add('correct');document.getElementById('result').innerHTML='<div class="explain">✅ 正解！</div>'}else{b.classList.add('wrong');document.getElementById('result').innerHTML=`<div class="explain">❌ 不正解。正答は ${q.answer} です。</div>`;document.querySelectorAll('.choice').forEach(x=>{if(x.textContent.startsWith(q.answer+'.'))x.classList.add('correct')})}document.getElementById('score').textContent=`正解 ${score} / 回答済み ${idx+1}問`;saveStudy()}
+function showAnswer(){let q=qs[idx];document.getElementById('result').innerHTML=q.answer==null?'<div class="explain">⚠ 公式正答未確認</div>':`<div class="explain">正答：${q.answer}</div>`}
+function nextQuestion(){if(idx<qs.length-1){idx++;showQuestion()}else{saveStudy();document.getElementById('result').innerHTML=`<div class="explain">🎉 終了！ 正解 ${score} / ${qs.length}問</div>`;document.getElementById('nextBtn').disabled=true}}
+function makeExplanation(q){if(q.answer==null)return 'この問題は公式正答を確認できないため、解説できません。';const c=q.choices.find(x=>x.n===q.answer);let mode=document.getElementById('mode').value;if(mode==='やさしく授業')return 'この問題の正答は、'+q.answer+'番です。正しい選択肢は、『'+(c?c.text:'')+'』です。問題文の条件と、この選択肢の内容を結び付けて覚えましょう。';if(mode==='合格モード')return '正答は'+q.answer+'番です。試験では、問題文の重要語句と正答の組み合わせを確認してください。';return '正答は'+q.answer+'番です。正しい選択肢は、『'+(c?c.text:'')+'』です。問題文の条件に対して、この内容が適切であることを確認してください。'}function speakExplanation(){stopSpeak();let q=qs[idx];let text=makeExplanation(q);document.getElementById('result').innerHTML='<div class="explain"><b>解説</b><br>'+text+'</div>';let u=new SpeechSynthesisUtterance(text);u.lang='ja-JP';u.rate=+document.getElementById('speed').value;u.onend=()=>{document.getElementById('speakBtn').textContent='🔊 解説を読み上げ'};speechSynthesis.speak(u);document.getElementById('speakBtn').textContent='🔊 解説を再生中…'}function stopSpeak(){speechSynthesis.cancel();document.getElementById('speakBtn').textContent='🔊 解説を読み上げ'}function openOfficial(){window.open('https://www.nichimu.or.jp/kshiken/siken/index.html','_blank')}
+</script></body></html>
+
+<script>window.addEventListener('load',updateResumeButton);</script>
